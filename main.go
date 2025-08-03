@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/tymoteuszhesse/chirpy/internal/database"
@@ -21,10 +21,6 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	platform       string
 	dbQueries      *database.Queries
-}
-
-type bodyReq struct {
-	Body string `json:"body"`
 }
 
 type cleanedBody struct {
@@ -39,6 +35,19 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type Chirps struct {
+	Body   string    `json:"body"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+type ChirpResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -63,7 +72,7 @@ func (cfg *apiConfig) resetHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	respondWithJSON(res, 200, []byte("OK"))
+	respondWithJSON(res, 200, "OK")
 	cfg.fileserverHits.Store(0)
 }
 
@@ -92,32 +101,6 @@ func main() {
 		res.Write([]byte("OK"))
 	})
 
-	mux.HandleFunc("POST /api/validate_chirp", func(res http.ResponseWriter, req *http.Request) {
-
-		decoder := json.NewDecoder(req.Body)
-		body := bodyReq{}
-		err := decoder.Decode(&body)
-		if err != nil {
-			handleDecodingError(err, res)
-		}
-		if len(body.Body) > 140 {
-			respondWithError(res, 400, "Chirp is too long")
-		}
-
-		body.Body = cleanBadWords(body.Body)
-
-		cleanedResp := cleanedBody{
-			CleanedBody: body.Body,
-		}
-		resp, err := json.Marshal(cleanedResp)
-		if err != nil {
-			log.Printf("Error marshalling JSON: %s", err)
-			res.WriteHeader(500)
-			return
-		}
-		respondWithJSON(res, 200, resp)
-	})
-
 	mux.HandleFunc("POST /api/users", func(res http.ResponseWriter, req *http.Request) {
 
 		decoder := json.NewDecoder(req.Body)
@@ -132,19 +115,52 @@ func main() {
 			res.WriteHeader(500)
 			return
 		}
-		userResponse := User{
-			ID:        uuid.UUID(user.ID),
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
-		}
-		resp, err := json.Marshal(userResponse)
+		userUUID, err := uuid.Parse(user.ID.String())
 		if err != nil {
-			log.Printf("Error marshalling response %s", err)
+			log.Printf("Error converting user ID to UUID: %s", err)
 			res.WriteHeader(500)
 			return
 		}
-		respondWithJSON(res, 201, resp)
+
+		respondWithJSON(res, 201, User{
+			ID:        userUUID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		})
+	})
+
+	mux.HandleFunc("POST /api/chirps", func(res http.ResponseWriter, req *http.Request) {
+
+		decoder := json.NewDecoder(req.Body)
+		body := Chirps{}
+		err := decoder.Decode(&body)
+		if err != nil {
+			handleDecodingError(err, res)
+		}
+
+		if len(body.Body) > 140 {
+			respondWithError(res, 400, "Chirp is too long")
+		}
+
+		body.Body = cleanBadWords(body.Body)
+		chirp, err := dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{UserID: body.UserID, Body: body.Body})
+
+		chirpID, err := uuid.Parse(chirp.ID.String())
+		if err != nil {
+			log.Printf("Error converting chirp ID to UUID: %s", err)
+			res.WriteHeader(500)
+			return
+		}
+		userID, err := uuid.Parse(chirp.UserID.String())
+		if err != nil {
+			log.Printf("Error converting user ID to UUID: %s", err)
+			res.WriteHeader(500)
+			return
+		}
+
+		respondWithJSON(res, 201, ChirpResponse{ID: chirpID, CreatedAt: chirp.CreatedAt, UpdatedAt: chirp.UpdatedAt, Body: chirp.Body, UserID: userID})
+
 	})
 
 	server := http.Server{Handler: mux, Addr: ":" + port}
@@ -168,28 +184,4 @@ func cleanBadWords(text string) string {
 		}
 	}
 	return text
-}
-
-func respondWithError(res http.ResponseWriter, code int, msg string) {
-	type errResp struct {
-		Error string `json:"error"`
-	}
-	respBody := errResp{
-		Error: msg,
-	}
-	resp, err := json.Marshal(respBody)
-	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err)
-		res.WriteHeader(500)
-		return
-	}
-	res.Header().Set("Content-Type", "application/json")
-	res.WriteHeader(code)
-	res.Write(resp)
-}
-
-func respondWithJSON(res http.ResponseWriter, code int, payload interface{}) {
-	res.Header().Set("Content-Type", "application/json")
-	res.WriteHeader(code)
-	res.Write(payload.([]byte))
 }
