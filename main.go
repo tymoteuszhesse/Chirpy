@@ -85,7 +85,6 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	db, _ := sql.Open("postgres", dbURL)
 	dbQueries := database.New(db)
-	log.Println(dbQueries)
 	const port = "8080"
 	apiCfg := apiConfig{platform: os.Getenv("PLATFORM"), dbQueries: dbQueries}
 	mux := http.NewServeMux()
@@ -144,7 +143,7 @@ func main() {
 		}
 
 		body.Body = cleanBadWords(body.Body)
-		chirp, err := dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{UserID: body.UserID, Body: body.Body})
+		chirp, _ := dbQueries.CreateChirp(req.Context(), database.CreateChirpParams{UserID: body.UserID, Body: body.Body})
 
 		chirpID, err := uuid.Parse(chirp.ID.String())
 		if err != nil {
@@ -161,6 +160,38 @@ func main() {
 
 		respondWithJSON(res, 201, ChirpResponse{ID: chirpID, CreatedAt: chirp.CreatedAt, UpdatedAt: chirp.UpdatedAt, Body: chirp.Body, UserID: userID})
 
+	})
+
+	mux.HandleFunc("GET /api/chirps", func(res http.ResponseWriter, req *http.Request) {
+		chirps, err := dbQueries.GetChirps(req.Context())
+		parsedChirps := make([]ChirpResponse, 0, len(chirps))
+		if err != nil {
+			respondWithError(res, 400, err.Error())
+		}
+		for _, chirp := range chirps {
+			parsedChirps = append(parsedChirps, ChirpResponse{
+				ID:        chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+				UserID:    chirp.UserID})
+		}
+
+		respondWithJSON(res, 200, parsedChirps)
+	})
+
+	mux.HandleFunc("GET /api/chirps/{chirpID}", func(res http.ResponseWriter, req *http.Request) {
+		uuidParam := req.PathValue("chirpID")
+		uuid, err := uuid.Parse(uuidParam)
+		if err != nil {
+			respondWithError(res, 400, err.Error())
+		}
+		chirp, err := dbQueries.GetChirpByID(req.Context(), uuid)
+		if err != nil {
+			respondWithError(res, 404, "not found")
+		}
+
+		respondWithJSON(res, 200, ChirpResponse{ID: chirp.ID, CreatedAt: chirp.CreatedAt, UpdatedAt: chirp.UpdatedAt, Body: chirp.Body, UserID: chirp.UserID})
 	})
 
 	server := http.Server{Handler: mux, Addr: ":" + port}
