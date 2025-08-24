@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/tymoteuszhesse/chirpy/internal/auth"
 	"github.com/tymoteuszhesse/chirpy/internal/database"
 )
 
@@ -27,8 +28,9 @@ type cleanedBody struct {
 	CleanedBody string `json:"cleaned_body"`
 }
 
-type userCreate struct {
-	Email string `json:"email"`
+type userCredentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 type User struct {
 	ID        uuid.UUID `json:"id"`
@@ -101,14 +103,19 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /api/users", func(res http.ResponseWriter, req *http.Request) {
-
 		decoder := json.NewDecoder(req.Body)
-		body := userCreate{}
+		body := userCredentials{}
 		err := decoder.Decode(&body)
 		if err != nil {
 			handleDecodingError(err, res)
 		}
-		user, err := dbQueries.CreateUser(req.Context(), body.Email)
+		hashedPassword, err := auth.HashPassword(body.Password)
+		if err != nil {
+			log.Printf("Error hashing password: %s", err)
+			res.WriteHeader(500)
+			return
+		}
+		user, err := dbQueries.CreateUser(req.Context(), database.CreateUserParams{Email: body.Email, HashedPassword: hashedPassword})
 		if err != nil {
 			log.Printf("Error inserting user: %s", err)
 			res.WriteHeader(500)
@@ -123,6 +130,34 @@ func main() {
 
 		respondWithJSON(res, 201, User{
 			ID:        userUUID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		})
+	})
+
+	mux.HandleFunc("POST /api/login", func(res http.ResponseWriter, req *http.Request) {
+		decoder := json.NewDecoder(req.Body)
+		body := userCredentials{}
+		err := decoder.Decode(&body)
+		if err != nil {
+			handleDecodingError(err, res)
+		}
+		user, err := dbQueries.GetUserPassword(req.Context(), body.Email)
+		if err != nil {
+			log.Printf("Error inserting user: %s", err)
+			res.WriteHeader(500)
+			return
+		}
+		err = auth.CheckPasswordHash(body.Password, user.HashedPassword)
+		if err != nil {
+			res.WriteHeader(401)
+			res.Write([]byte("Unauthorized"))
+			return
+		}
+
+		respondWithJSON(res, 200, User{
+			ID:        user.ID,
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
 			Email:     user.Email,
